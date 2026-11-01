@@ -1,0 +1,2 @@
+{"id":1,"sku":"A-100","status":"PAID","total":"1500.00","createdAt":"2026-10-01T09:00:00Z"}
+HTTP 200

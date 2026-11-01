@@ -1,0 +1,2 @@
+{"id":4,"sku":"B-202","status":"NEW","total":"1000.00","createdAt":"2026-11-01T10:00:00Z"}
+HTTP 201

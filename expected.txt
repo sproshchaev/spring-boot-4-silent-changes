@@ -1,0 +1,11 @@
+boot 3.5 build: green, tests 2, failures 0
+boot 3.5 against golden: changed 0 of 9
+contract check on boot3: green, tests 2, failures 0
+recipe: parent is now 4.0.x
+recipe: application.properties untouched
+boot 4.0 build after recipe: green, tests 2, failures 0
+boot 4.0 after recipe: changed 9 of 9 (01-list-seeded 02-get-seeded 03-create-plain 04-create-null-int 05-create-no-int 06-create-unknown 07-create-trailing 08-set-status 09-health)
+plus use-jackson2-defaults: changed 1 of 9 (09-health)
+plus probes disabled: changed 0 of 9
+five explicit settings and probes disabled: changed 0 of 9
+contract check on boot4: red, tests 2, failures 2
