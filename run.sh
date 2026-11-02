@@ -5,6 +5,12 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+for tool in mvn curl jq; do
+    command -v "$tool" >/dev/null || { echo "FAIL: $tool is required, see README.md" >&2; exit 1; }
+done
+# On a newer JDK the recipe cannot parse the sources, skips them and still reports BUILD SUCCESS
+[[ $(mvn -v) == *"Java version: 21."* ]] || { echo "FAIL: Maven must run on JDK 21, see README.md" >&2; exit 1; }
+
 PLUGIN=org.openrewrite.maven:rewrite-maven-plugin:6.46.1
 RECIPES=org.openrewrite.recipe:rewrite-spring:6.37.1
 RECIPE=org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0
@@ -32,21 +38,39 @@ maven_step() {
     shift 3
     (cd "$dir" && mvn -B -q clean "$@") >"$BUILD/$log.log" 2>&1 || result=red
     tests=$(cat "$dir"/target/surefire-reports/*.txt 2>/dev/null \
-        | awk -F'[:,] *' '/^Tests run:/ {r+=$2; f+=$4+$6} END {printf "tests %d, failures %d", r, f}')
+        | awk -F'[:,] *' '/^Tests run:/ {r+=$2; f+=$4+$6} END {printf "tests %d, failures %d", r, f}' || true)
     say "$label: $result, $tests"
 }
 
-# Captures the contract of a built service and compares it with the golden responses.
-# cmp fails on a file missing from either side, so a response without a golden file counts as a change.
-snapshot() {
-    local label=$1 dir=$2 out=$BUILD/out-$3 changed=() total=0 name
-    shift 3
-    contract/capture.sh "$dir/target/orders-api-1.0.0.jar" "$out" "$@"
+# Compares the responses in a directory with the golden ones using the given command.
+# A file missing from either side fails the command, so a response without a golden file counts as a change.
+report_changes() {
+    local label=$1 out=$2 changed=() total=0 name
+    shift 2
     for name in $(ls "$GOLDEN" "$out" | grep '\.txt$' | sort -u); do
         total=$((total + 1))
-        cmp -s "$GOLDEN/$name" "$out/$name" || changed+=("${name%.txt}")
+        "$@" "$GOLDEN/$name" "$out/$name" || changed+=("${name%.txt}")
     done
     say "$label: changed ${#changed[@]} of $total${changed[*]:+ (${changed[*]})}"
+}
+
+# Key order does not change a JSON value (RFC 8259), so here bodies are compared with sorted keys.
+# The status line is quoted to become a JSON value too. A body that is not JSON counts as a change.
+sorted_json() {
+    sed 's/^HTTP .*/"&"/' "$1" | jq -S .
+}
+
+same_json() {
+    local a b
+    a=$(sorted_json "$1") && b=$(sorted_json "$2") && [ "$a" = "$b" ]
+}
+
+# Captures the contract of a built service and compares it with the golden responses.
+snapshot() {
+    local label=$1 dir=$2 out=$BUILD/out-$3
+    shift 3
+    contract/capture.sh "$dir/target/orders-api-1.0.0.jar" "$out" "$@"
+    report_changes "$label" "$out" cmp -s
 }
 
 # 1. The 3.5 version: the baseline must match the golden responses
@@ -78,8 +102,8 @@ maven_step "boot 4.0 build after recipe" boot4-build "$BOOT4" verify
 # 4. The contract after the recipe and after each fix
 JACKSON2=--spring.jackson.use-jackson2-defaults=true
 PROBES=--management.endpoint.health.probes.enabled=false
-EXPLICIT=(
-    --spring.jackson.mapper.sort-properties-alphabetically=false
+KEY_ORDER=--spring.jackson.mapper.sort-properties-alphabetically=false
+OTHER_JACKSON=(
     --spring.jackson.datatype.enum.write-enums-using-to-string=false
     --spring.jackson.datatype.enum.read-enums-using-to-string=false
     --spring.jackson.deserialization.fail-on-null-for-primitives=false
@@ -87,9 +111,14 @@ EXPLICIT=(
 )
 
 snapshot "boot 4.0 after recipe" "$BOOT4" boot4
+report_changes "boot 4.0 after recipe, as json" "$BUILD/out-boot4" same_json
 snapshot "plus use-jackson2-defaults" "$BOOT4" jackson2 "$JACKSON2"
 snapshot "plus probes disabled" "$BOOT4" jackson2-probes "$JACKSON2" "$PROBES"
-snapshot "five explicit settings and probes disabled" "$BOOT4" explicit "${EXPLICIT[@]}" "$PROBES"
+snapshot "five explicit settings and probes disabled" "$BOOT4" explicit "$KEY_ORDER" "${OTHER_JACKSON[@]}" "$PROBES"
+
+# Control for the json comparison: with everything fixed but the sorting only key order is left
+snapshot "only key order left" "$BOOT4" order-only "${OTHER_JACKSON[@]}" "$PROBES"
+report_changes "only key order left, as json" "$BUILD/out-order-only" same_json
 
 # 5. A test in the build that pins the exact contract notices the change
 maven_step "contract check on boot4" boot4-check "$BOOT4" test -Dtest=OrderContractCheck
